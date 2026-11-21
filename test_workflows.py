@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 import cv2
 import numpy as np
-from verified_workflow import Vision, EvidenceError, VerifiedShopSeller, FarmWorkflow, Stopped
+from verified_workflow import Vision, EvidenceError, VerifiedShopSeller, FarmWorkflow, CalibratedFarm, Stopped
 from bot import BlueStacksBot
 
 class Bot:
@@ -175,6 +175,9 @@ class Regression(unittest.TestCase):
             b.phase = result
 
         class FieldVision:
+            def drag_point(self, name, center):
+                return center
+
             def tool_open(self, image):
                 return False
 
@@ -267,6 +270,62 @@ class Regression(unittest.TestCase):
         b.tap = lambda x, y: b.taps.append((x, y)) if (x, y) == (25, 25) else tap(x, y)
         self.assertEqual(s.select_surplus(10), 8)
         self.assertEqual(b.taps.count((25, 25)), 2)
+
+class CalibratedFarmRegression(unittest.TestCase):
+    def test_relative_anchor_uses_template_top_left(self):
+        vision = Vision(None)
+        vision.templates['harvest_tool'] = np.zeros((21, 41, 3), np.uint8)
+        with patch.dict('verified_workflow.CONFIG', {'drag_anchors': {'harvest_tool': [.25, .7]}}):
+            self.assertEqual(vision.drag_point('harvest_tool', (150, 80)), (140, 84))
+
+    def make_farm(self):
+        bot = Bot()
+        farm = CalibratedFarm(bot)
+        states = ['ripe'] * 5 + ['empty']
+        attempts = []
+        markers = []
+        farm.load_plots = lambda: None
+        farm.stable = bot.screenshot
+        farm.v.require = lambda names: None
+        farm.v.tool_open = lambda frame: False
+        farm.log = lambda *args, **kwargs: None
+        farm.scan = lambda *a, **kw: [((50+35*i, 50), value) for i, value in enumerate(states)]
+        farm.evidence = lambda reason, i, *_: markers.append((i, reason))
+
+        def open_tool(index, cells, planting):
+            attempts.append((index, planting))
+            if index != 2:
+                states[index] = 'growing' if planting else 'empty'
+            return bot.screenshot()
+
+        farm.open_tool = open_tool
+        return farm, states, attempts, markers
+
+    def test_middle_plot_retries_then_continues_and_replants_only_confirmed(self):
+        farm, states, attempts, markers = self.make_farm()
+        result = farm.harvest_and_plant()
+        self.assertEqual(result['reason'], 'complete_with_remaining')
+        self.assertEqual((result['harvested'], result['planted'], result['remaining']), (4, 4, 1))
+        self.assertEqual(result['remaining_plots'], [3])
+        self.assertEqual(attempts, [(0,False), (1,False), (2,False), (2,False), (3,False), (4,False),
+                                    (0,True), (1,True), (3,True), (4,True)])
+        self.assertEqual(markers, [(2,'transition_ripe')])
+        self.assertEqual(states, ['growing','growing','ripe','growing','growing','empty'])
+
+    def test_unknown_screen_stops_before_next_plot(self):
+        farm, states, attempts, _ = self.make_farm()
+        old_scan = farm.scan
+
+        def scan(*args, **kwargs):
+            if attempts:
+                raise EvidenceError('lost_camera_landmarks')
+            return old_scan(*args, **kwargs)
+
+        farm.scan = scan
+        result = farm.harvest_and_plant()
+        self.assertEqual(result['reason'], 'lost_camera_landmarks')
+        self.assertEqual(attempts, [(0,False)])
+        self.assertEqual(result['harvested'], 0)
 
 class Integration(unittest.TestCase):
     def test_menu_8_through_13(self):

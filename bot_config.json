@@ -108,5 +108,11 @@
     "field_selected_ripe": 0.7,
     "harvest_tool": 0.8
   },
-  "wheat_seed_reserve": 30
+  "wheat_seed_reserve": 30,
+  "drag_anchors": {
+    "harvest_tool": [
+      0.275,
+      0.47
+    ]
+  }
 }

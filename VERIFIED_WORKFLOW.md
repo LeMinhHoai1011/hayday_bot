@@ -21,6 +21,31 @@ Android ngay khi kết nối. Cài các thư viện Python của dự án nếu 
 4. Với vòng liên tục, bot kiểm tra ảnh lúa chín trước khi bắt đầu lượt mới. Menu
    **6** của \`auto_hayday.py\` cho đổi thời gian chờ mặc định 120 giây.
 
+## Cào và gieo một cụm đã đánh dấu
+
+1. Mở đúng farm và đưa cả cụm vào khung ảnh Android ở mức zoom dùng để chạy.
+2. Chạy `python auto_hayday.py calibrate-plots`. Bấm vào tâm mặt đất của từng ô
+   trong cụm, kể cả ô đang trống hoặc đang mọc. Chuột phải bỏ điểm cuối, Enter
+   lưu và Esc hủy. Số thứ tự bấm là mã ô và thứ tự xử lý. Hiệu chỉnh lại khi
+   đổi farm, zoom, độ phân giải hoặc bố trí ruộng.
+3. Chạy `python auto_hayday.py debug` để xem tâm và trạng thái từng ô. Ảnh dùng
+   cùng bộ dò với `python auto_hayday.py harvest-plant`. Chạy
+   `python auto_hayday.py harvest-plant 1` để thử giới hạn một ô đã xác nhận.
+   Một đường kéo có thể chạm thêm ô trong cụm. Bot ghi nhận những ô đã quan sát
+   chuyển từ chín sang trống và đưa chúng vào danh sách gieo.
+4. Xem dòng `harvest_plant_result` trong `debug/steps.jsonl`. Trường
+   `remaining` đếm các ô chín hoặc chưa rõ lúc bắt đầu mà chưa xác nhận cào,
+   kể cả ô chưa đến lượt theo giới hạn. `unplanted` đếm riêng số ô đã cào mà
+   chưa xác nhận gieo. Bot thử kéo liềm tối đa hai lần khi ảnh vẫn xác nhận ô
+   chín. Nếu màn hình và mốc camera còn xác định được, bot lưu ảnh ô lỗi và
+   làm tiếp. Khi mất mốc hoặc gặp màn hình lạ, bot dừng.
+
+`drag_anchors.harvest_tool` trong `bot_config.json` là tọa độ tương đối từ góc
+trái trên của ảnh mẫu, theo tỷ lệ từ 0 đến 1. `debug/last_drag.png` đánh dấu tâm
+ảnh mẫu bằng vòng xanh, điểm bắt đầu kéo bằng dấu đỏ và tâm ô đích bằng dấu
+vàng. `debug/last_harvest_drag.png` giữ riêng lượt kéo liềm gần nhất. Với đường gieo đi qua ô trống hoặc chưa rõ ngoài danh sách đã cào trong
+cụm, bot ghi lý do và bỏ lượt gieo đó.
+
 ## Ảnh mẫu
 
 Các mẫu đã cắt trong \`templates/\` lấy từ ảnh Android 1600×900 trên BlueStacks ở

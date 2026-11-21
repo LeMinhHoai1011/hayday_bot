@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from bot import BlueStacksBot, ADB
 from bot_config import CONFIG
-from verified_workflow import (FarmWorkflow, HARVEST_TEMPLATES, PLANT_TEMPLATES,
+from verified_workflow import (CalibratedFarm, FarmWorkflow, HARVEST_TEMPLATES, PLANT_TEMPLATES,
                                EvidenceError, WORKFLOW_ERRORS)
 from auto_calibrate import Positions, ElementDetector
 
@@ -360,7 +360,8 @@ class HayDayAutoBot(BlueStacksBot):
     # ── Debug view ────────────────────────────────────────────────────────────
 
     def debug_view(self, save_path="debug_detect.png"):
-        farm = FarmWorkflow(self)
+        calibrated = CalibratedFarm(self)
+        farm = calibrated if calibrated.calibration_path.exists() else FarmWorkflow(self)
         try:
             vis, points = farm.preview(farm.stable())
             if not cv2.imwrite(save_path, vis):
@@ -370,6 +371,37 @@ class HayDayAutoBot(BlueStacksBot):
         except WORKFLOW_ERRORS as error:
             farm.fail(error)
             return None
+
+    def calibrate_plots(self):
+        farm = CalibratedFarm(self)
+        with self.task():
+            image = farm.stable()
+            centers = []
+            window = 'Plot centers | Left click: add | Right click: undo | Enter: save'
+            cv2.namedWindow(window)
+            def select(event, x, y, flags, params):
+                if event == cv2.EVENT_LBUTTONDOWN:
+                    centers.append((x, y))
+                elif event == cv2.EVENT_RBUTTONDOWN and centers:
+                    centers.pop()
+            cv2.imshow(window, image)
+            cv2.setMouseCallback(window, select)
+            try:
+                while cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) >= 1:
+                    overlay = image.copy()
+                    for i, point in enumerate(centers, 1):
+                        cv2.drawMarker(overlay, point, (0,255,255), cv2.MARKER_CROSS, 18, 2)
+                        cv2.putText(overlay, str(i), point, cv2.FONT_HERSHEY_SIMPLEX, .6, (0,0,255), 2)
+                    cv2.imshow(window, overlay)
+                    key = cv2.waitKey(50) & 255
+                    if key in (10, 13):
+                        farm.save_plots(image, centers)
+                        print(f'Saved {len(centers)} plot centers.')
+                        return
+                    if key == 27:
+                        return
+            finally:
+                cv2.destroyAllWindows()
 
     def calibrate_wheat_button(self):
         from hayday import HayDayBot
@@ -485,6 +517,15 @@ def main():
 
     if len(sys.argv) > 1:
         cmd = sys.argv[1]
+        if cmd == "calibrate-plots":
+            try:
+                bot.calibrate_plots()
+            except WORKFLOW_ERRORS as error:
+                print(error)
+            return
+        if cmd == "harvest-plant":
+            CalibratedFarm(bot).harvest_and_plant(limit=int(sys.argv[2]) if len(sys.argv) > 2 else None)
+            return
         if cmd == "loop":
             bot.run_loop(max_cycles=int(sys.argv[2]) if len(sys.argv) > 2 else 0,
                          limit=int(sys.argv[3]) if len(sys.argv) > 3 else None)
@@ -510,7 +551,7 @@ def main():
         print("  2. Cắt mẫu nút lúa mì từ ảnh BlueStacks")
         print("  3. Thu hoạch tất cả ruộng chín")
         print("  4. Trồng lại tất cả ruộng trống")
-        print("  5. 1 lần: harvest + plant")
+        print("  5. Cào + Gieo cụm đã hiệu chỉnh")
         print("  6. Auto loop (cào → gieo → bán dư → kiểm tra chín)")
         print("  7. Bán lúa mì trong shop (giá MAX)")
         print("  8. Reset field bbox (khi farm thay đổi)")
@@ -535,15 +576,7 @@ def main():
             bot.plant_empty()
 
         elif c == "5":
-            farm = FarmWorkflow(bot)
-            try:
-                with bot.task():
-                    farm.v.require(tuple(dict.fromkeys(HARVEST_TEMPLATES + PLANT_TEMPLATES)))
-                    harvested = farm.run()
-                    if harvested and farm.reason == 'complete':
-                        farm.run(plant=True, limit=harvested, targets=farm.confirmed)
-            except WORKFLOW_ERRORS as error:
-                farm.fail(error)
+            CalibratedFarm(bot).harvest_and_plant()
 
         elif c == "6":
             iv = input("  Chờ bao nhiêu giây giữa mỗi lần? (mặc định 120 cho lúa mì): ").strip()

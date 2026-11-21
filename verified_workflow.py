@@ -15,6 +15,10 @@ class Stopped(RuntimeError):
 class EvidenceError(RuntimeError):
     pass
 
+
+class PlotActionDeferred(EvidenceError):
+    pass
+
 HARVEST_TEMPLATES = ('farm_screen', 'field_ripe', 'harvest_tool', 'field_empty', 'field_selected_ripe')
 PLANT_TEMPLATES = ('farm_screen', 'field_empty', 'seed_menu', 'crop_menu_wheat', 'field_growing',
                    'field_selected_empty')
@@ -125,6 +129,16 @@ class Vision:
         if not matches:
             raise EvidenceError('unconfirmed:' + name)
         return matches[0][:2]
+
+    def drag_point(self, name, center):
+        anchor = CONFIG.get('drag_anchors', {}).get(name)
+        if anchor is None:
+            return center
+        if len(anchor) != 2 or not all(0 <= value <= 1 for value in anchor):
+            raise EvidenceError('invalid_drag_anchor:' + name)
+        h, w = self.template(name).shape[:2]
+        x, y = center
+        return (x-w//2+round(anchor[0]*(w-1)), y-h//2+round(anchor[1]*(h-1)))
 
     def state(self, name, image):
         return bool(self.matches(name, image))
@@ -420,7 +434,8 @@ class FarmWorkflow(Workflow):
                     if plant:
                         self.v.point('seed_menu', menu)
                     tool_name = 'crop_menu_wheat' if plant else 'harvest_tool'
-                    tool = self.v.point(tool_name, menu)
+                    tool_center = self.v.point(tool_name, menu)
+                    tool = self.v.drag_point(tool_name, tool_center)
                     dx, dy = self.camera(before, menu, (x, y))
                     if self.moved(dx, dy):
                         self.shift_zones(dx, dy, menu)
@@ -440,12 +455,16 @@ class FarmWorkflow(Workflow):
                         self.confirmed = [(px+dx, py+dy) for px, py in self.confirmed]
                     action = 'plant' if plant else 'harvest'
                     self.check()
-                    self.log(action+'_drag', coordinates=[tool,(x,y)], source=tool_name+'/'+state)
+                    self.log(action+'_drag', coordinates=[tool,(x,y)], match_center=tool_center, source=tool_name+'/'+state)
                     if self.last_frame is not None:
                         overlay = menu.copy()
                         for box in self.zones:
                             x0, y0, x1, y1 = self.v.bounds(state, menu, self.fraction(box, menu))
                             cv2.rectangle(overlay, (x0, y0), (x1-1, y1-1), (255, 255, 0), 2)
+                        cv2.circle(overlay, tool_center, 8, (255, 128, 0), 2)
+                        cv2.drawMarker(overlay, tool, (0, 0, 255), cv2.MARKER_CROSS, 18, 2)
+                        cv2.putText(overlay, 'DRAG START', (tool[0]+10, tool[1]-8),
+                                    cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 0, 255), 2)
                         cv2.arrowedLine(overlay, tool, (x, y), (0, 0, 255), 3)
                         cv2.drawMarker(overlay, (x, y), (0, 255, 255), cv2.MARKER_CROSS, 14, 2)
                         cv2.imwrite(str(self.debug/'last_drag.png'), overlay)
@@ -477,6 +496,261 @@ class FarmWorkflow(Workflow):
             self.fail(error, self.action_frame if self.action_frame is not None else before)
         self.b.last_reason = self.reason
         return count
+
+
+class CalibratedFarm(FarmWorkflow):
+    """Track plot IDs in a reference image throughout a harvest and replant pass."""
+
+    @property
+    def calibration_path(self):
+        return super().calibration_path.with_name(
+            super().calibration_path.name.replace('field_calibration_', 'plot_calibration_'))
+
+    def save_plots(self, image, centers):
+        h, w = image.shape[:2]
+        if (not centers or any(not (16 <= x < w-16 and 16 <= y < h-16) for x, y in centers)
+                or any(near(point, other) for i, point in enumerate(centers)
+                       for other in centers[:i])):
+            raise EvidenceError('invalid_plot_centers')
+        self.v.point('farm_screen', image)
+        if self.v.tool_open(image):
+            raise EvidenceError('tool_menu_already_open')
+        path = self.calibration_path
+        temporary = path.with_suffix('.tmp')
+        with temporary.open('wb') as file:
+            np.savez_compressed(file, frame=image, centers=centers)
+        temporary.replace(path)
+
+    def load_plots(self):
+        try:
+            with np.load(self.calibration_path) as data:
+                self.reference = data['frame']
+                self.centers = [tuple(map(int, p)) for p in data['centers']]
+        except (OSError, ValueError, KeyError) as error:
+            raise EvidenceError('plot_calibration_required: auto_hayday.py calibrate-plots') from error
+        xs, ys = zip(*self.centers)
+        h, w = self.reference.shape[:2]
+        self.zones = [(max(0,min(xs)-48), max(0,min(ys)-65),
+                       min(w,max(xs)+48), min(h,max(ys)+35))]
+
+    @staticmethod
+    def plot_state(image, point):
+        x, y = point
+        if x < 15 or y < 14 or x+16 > image.shape[1] or y+10 > image.shape[0]:
+            return 'unknown'
+        patch = image[y-14:y+10, x-15:x+16]
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        # The lower core samples the plot surface, below the tops of neighboring stalks.
+        core = hsv[5:20, 5:26]
+        bright = cv2.inRange(hsv, (17, 105, 150), (41, 255, 255))
+        soil = cv2.inRange(core, (0, 85, 40), (18, 255, 245))
+        green = cv2.inRange(core, (34, 95, 75), (92, 255, 250))
+        wheat = cv2.countNonZero(bright) / bright.size
+        core_wheat = cv2.countNonZero(bright[5:20, 5:26]) / soil.size
+        earth = cv2.countNonZero(soil) / soil.size
+        sprouts = cv2.countNonZero(green) / green.size
+        if wheat >= .76 and earth <= .17:
+            return 'ripe'
+        if core_wheat <= .36 and earth >= .67 and sprouts < .12:
+            return 'empty'
+        if wheat < .42 and .15 <= sprouts < .88 and earth >= .10:
+            return 'growing'
+        return 'unknown'
+
+    def scan(self, image, *, allow_tool=False):
+        if self.reference is None:
+            self.load_plots()
+        self.v.point('farm_screen', image)
+        if not allow_tool and self.v.tool_open(image):
+            raise EvidenceError('tool_menu_already_open: close the tool in BlueStacks')
+        dx, dy = self.camera(self.reference, image)
+        cells = [(round(x+dx), round(y+dy)) for x,y in self.centers]
+        return [(point, self.plot_state(image, point)) for point in cells]
+
+    def preview(self, image, name='field_ripe'):
+        scan = self.scan(image)
+        overlay = image.copy()
+        colors = {'ripe': (0,255,255), 'empty': (40,140,255), 'growing': (30,230,30),
+                  'unknown': (220,220,220)}
+        points = []
+        for index, (point, state) in enumerate(scan, 1):
+            color = colors[state]
+            cv2.drawMarker(overlay, point, color, cv2.MARKER_CROSS, 14, 2)
+            cv2.putText(overlay, f'{index} {state}', (point[0]+5,point[1]-7),
+                        cv2.FONT_HERSHEY_SIMPLEX, .38, color, 1)
+            if state == 'ripe':
+                points.append((*point, 1.0))
+        return overlay, points
+
+    def draw_drag(self, image, center, start, point, *, planting):
+        overlay = image.copy()
+        cv2.circle(overlay, center, 8, (255,128,0), 2)
+        cv2.drawMarker(overlay, start, (0,0,255), cv2.MARKER_CROSS, 18, 2)
+        cv2.arrowedLine(overlay, start, point, (0,0,255), 2)
+        cv2.drawMarker(overlay, point, (0,255,255), cv2.MARKER_CROSS, 18, 2)
+        cv2.putText(overlay, 'DRAG START', (start[0]+8,start[1]-8),
+                    cv2.FONT_HERSHEY_SIMPLEX, .5, (0,0,255), 2)
+        cv2.putText(overlay, 'TARGET', (point[0]+8,point[1]+18),
+                    cv2.FONT_HERSHEY_SIMPLEX, .5, (0,255,255), 2)
+        cv2.imwrite(str(self.debug/'last_drag.png'), overlay)
+        if not planting:
+            cv2.imwrite(str(self.debug/'last_harvest_drag.png'), overlay)
+
+    @staticmethod
+    def crosses_plot(start, end, point):
+        samples = np.linspace(start, end, 45)
+        distances = np.abs(samples-np.asarray(point)) / (36, 17)
+        return bool(np.any(distances.sum(axis=1) <= 1))
+
+    def open_tool(self, index, cells, planting):
+        point = cells[index][0]
+        self.tap(point, 'calibrated_plot')
+        menu = self.stable()
+        self.action_frame = menu
+        mapped = self.scan(menu, allow_tool=True)
+        tool = 'crop_menu_wheat' if planting else 'harvest_tool'
+        if planting:
+            self.v.point('seed_menu', menu)
+        target = mapped[index][0]
+        x, y = target
+        h, w = menu.shape[:2]
+        if not (15 <= x < w-15 and 15 <= y < h-15):
+            raise EvidenceError('plot_left_viewport')
+        local = self.fraction((x-360, y-330, x+360, y+330), menu)
+        # Tool position varies with the radial menu and edge of the viewport.
+        local = intersection(local, (0,0,1,1))
+        try:
+            center = self.v.point(tool, menu, local)
+        except EvidenceError as error:
+            if (not planting and str(error) == 'unconfirmed:harvest_tool'
+                    and mapped[index][1] == 'ripe' and not self.v.tool_open(menu)):
+                raise PlotActionDeferred('tool_unconfirmed_after_tap') from error
+            raise
+        start = self.v.drag_point(tool, center)
+        self.draw_drag(menu, center, start, target, planting=planting)
+        if planting and any(i not in self.harvested and cells[i][1] in ('empty','unknown')
+                            and self.crosses_plot(start, target, point)
+                            for i, (point, _) in enumerate(mapped)):
+            raise PlotActionDeferred('plant_path_crosses_other_plot')
+        self.log('plant_drag' if planting else 'harvest_drag', plot=index+1,
+                 match_center=center, coordinates=[start,target])
+        self.b.drag(*start, *target)
+        return menu
+
+    def close_tool(self, frame):
+        """Dismiss a known tool only over unchanged grass outside the farm and HUD."""
+        dx, dy = self.camera(self.reference, frame)
+        h, w = frame.shape[:2]
+        x0, y0, x1, y1 = self.zones[0]
+        for y in range(round(.23*h), round(.7*h), 40):
+            for x in range(round(.13*w), round(.86*w), 45):
+                rx, ry = round(x-dx), round(y-dy)
+                if (x0-130 <= rx <= x1+130 and y0-130 <= ry <= y1+130
+                        or not (18 <= rx < w-18 and 18 <= ry < h-18)):
+                    continue
+                patch = frame[y-16:y+17,x-16:x+17]
+                ref = self.reference[ry-16:ry+17,rx-16:rx+17]
+                hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+                grass = cv2.inRange(hsv, (32,100,76), (87,255,255))
+                if cv2.countNonZero(grass) >= grass.size*.97 and cv2.absdiff(patch,ref).mean() < 12:
+                    self.tap((x,y), 'verified_grass_close')
+                    after = self.stable()
+                    return after, self.scan(after)
+        raise EvidenceError('tool_still_open_no_verified_dismiss_point')
+
+    def evidence(self, reason, index, before, after):
+        stem = f'plot_{index+1}_{time.time_ns()}'
+        cv2.imwrite(str(self.debug/(stem+'_before.png')), before)
+        cv2.imwrite(str(self.debug/(stem+'_after.png')), after)
+        self.log('plot_unconfirmed', plot=index+1, reason=reason, images=stem)
+
+    def watch_transition(self, index, planting, prior, confirmed, allowed):
+        source, desired = ('empty','growing') if planting else ('ripe','empty')
+        previous_hits = set()
+        for _ in range(5):
+            frame = self.stable()
+            cells = self.scan(frame, allow_tool=True)
+            if not self.v.tool_open(frame):
+                hits = {i for i in allowed if prior[i][1] == source and cells[i][1] == desired}
+                confirmed.update(hits & previous_hits)
+                previous_hits = hits
+                obscured = any(prior[i][1] == source and cells[i][1] == 'unknown' for i in allowed)
+                if index in confirmed and not obscured:
+                    return frame, cells
+        if self.v.tool_open(frame):
+            return self.close_tool(frame)
+        return frame, cells
+
+    def pass_plots(self, frame, cells, pending, planting, limit=None):
+        source = 'empty' if planting else 'ripe'
+        confirmed = self.planted if planting else self.harvested
+        for index in pending:
+            deferred = None
+            if index in confirmed:
+                continue
+            if limit is not None and len(confirmed) >= limit:
+                break
+            if cells[index][1] == 'unknown':
+                frame = self.stable()
+                cells = self.scan(frame)
+            if cells[index][1] != source:
+                self.evidence('precondition_'+cells[index][1], index, frame, frame)
+                continue
+            # Retry only while the original state is still positively identified on the farm.
+            for _ in range(2 if not planting else 1):
+                previous_confirmed = confirmed.copy()
+                try:
+                    menu = self.open_tool(index, cells, planting)
+                except PlotActionDeferred as error:
+                    menu = self.action_frame
+                    deferred = str(error)
+                    if planting:
+                        frame, cells = self.close_tool(menu)
+                        break
+                    frame, cells = menu, self.scan(menu)
+                    if cells[index][1] != source:
+                        break
+                    continue
+                deferred = None
+                allowed = pending if planting else range(len(cells))
+                frame, cells = self.watch_transition(index, planting, cells, confirmed, allowed)
+                for hit in sorted(confirmed-previous_confirmed):
+                    self.log('plot_planted' if planting else 'plot_harvested',
+                             plot=hit+1, coordinates=cells[hit][0])
+                if index in confirmed or cells[index][1] != source:
+                    break
+            if index not in confirmed:
+                self.evidence(deferred or 'transition_'+cells[index][1], index, menu, frame)
+        return frame, cells
+
+    def harvest_and_plant(self, limit=None):
+        self.harvested, self.planted, self.remaining = set(), set(), set()
+        pending = []
+        try:
+            if limit is not None and limit < 1:
+                raise EvidenceError('field limit must be positive')
+            self.v.require(('farm_screen', 'harvest_tool', 'seed_menu', 'crop_menu_wheat'))
+            with self.b.task():
+                self.load_plots()
+                frame = self.stable()
+                cells = self.scan(frame)
+                pending = [i for i, (_, state) in enumerate(cells) if state in ('ripe','unknown')]
+                frame, cells = self.pass_plots(frame, cells, pending, False, limit)
+                self.pass_plots(frame, cells, sorted(self.harvested), True)
+                self.reason = 'complete'
+        except WORKFLOW_ERRORS as error:
+            self.fail(error)
+        self.remaining = set(pending) - self.harvested
+        unplanted = self.harvested - self.planted
+        if self.reason == 'complete' and (unplanted or (self.remaining and (limit is None or len(self.harvested) < limit))):
+            self.reason = 'complete_with_remaining'
+        result = dict(harvested=len(self.harvested), planted=len(self.planted),
+                      remaining=len(self.remaining), unplanted=len(unplanted),
+                      remaining_plots=[i+1 for i in sorted(self.remaining)],
+                      unplanted_plots=[i+1 for i in sorted(unplanted)], reason=self.reason)
+        self.b.last_reason = self.reason
+        self.log('harvest_plant_result', **result)
+        return result
 
 
 class VerifiedShopSeller(Workflow):
