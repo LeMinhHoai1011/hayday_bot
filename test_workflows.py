@@ -278,6 +278,15 @@ class CalibratedFarmRegression(unittest.TestCase):
         with patch.dict('verified_workflow.CONFIG', {'drag_anchors': {'harvest_tool': [.25, .7]}}):
             self.assertEqual(vision.drag_point('harvest_tool', (150, 80)), (140, 84))
 
+    def test_dense_shoot_texture_differs_from_plain_grass(self):
+        hsv = np.zeros((64,64,3), np.uint8)
+        hsv[:] = (40,190,170)
+        grass = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        hsv[:, ::2, 2] = 105
+        shoots = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        self.assertEqual(CalibratedFarm.plot_state(grass, (32,32)), 'unknown')
+        self.assertEqual(CalibratedFarm.plot_state(shoots, (32,32)), 'growing')
+
     def make_farm(self):
         bot = Bot()
         farm = CalibratedFarm(bot)

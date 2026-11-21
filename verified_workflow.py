@@ -542,7 +542,7 @@ class CalibratedFarm(FarmWorkflow):
         hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
         # The lower core samples the plot surface, below the tops of neighboring stalks.
         core = hsv[5:20, 5:26]
-        bright = cv2.inRange(hsv, (17, 105, 150), (41, 255, 255))
+        bright = cv2.inRange(hsv, (17, 105, 150), (33, 255, 255))
         soil = cv2.inRange(core, (0, 85, 40), (18, 255, 245))
         green = cv2.inRange(core, (34, 95, 75), (92, 255, 250))
         wheat = cv2.countNonZero(bright) / bright.size
@@ -553,8 +553,13 @@ class CalibratedFarm(FarmWorkflow):
             return 'ripe'
         if core_wheat <= .36 and earth >= .67 and sprouts < .12:
             return 'empty'
-        if wheat < .42 and .15 <= sprouts < .88 and earth >= .10:
+        if wheat < .42 and sprouts >= .15 and earth >= .10:
             return 'growing'
+        # Taller shoots cover the soil, but their blade texture differs from plain grass.
+        if wheat < .42 and sprouts >= .78:
+            gray = cv2.cvtColor(patch[5:20, 5:26], cv2.COLOR_BGR2GRAY)
+            if cv2.Laplacian(gray, cv2.CV_32F).std() >= 27:
+                return 'growing'
         return 'unknown'
 
     def scan(self, image, *, allow_tool=False):
