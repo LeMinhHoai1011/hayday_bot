@@ -667,9 +667,18 @@ class CalibratedFarm(FarmWorkflow):
     def watch_transition(self, index, planting, prior, confirmed, allowed):
         source, desired = ('empty','growing') if planting else ('ripe','empty')
         previous_hits = set()
-        for _ in range(5):
+        for attempt in range(5):
             frame = self.stable()
-            cells = self.scan(frame, allow_tool=True)
+            try:
+                cells = self.scan(frame, allow_tool=True)
+            except EvidenceError as error:
+                # XP and inventory rewards can momentarily cover the farm HUD.
+                # Take another picture without sending input. A persistent mismatch stops.
+                if str(error) != 'unconfirmed:farm_screen' or attempt == 4:
+                    raise
+                previous_hits.clear()
+                self.log('farm_hud_recheck', plot=index+1)
+                continue
             if not self.v.tool_open(frame):
                 hits = {i for i in allowed if prior[i][1] == source and cells[i][1] == desired}
                 confirmed.update(hits & previous_hits)

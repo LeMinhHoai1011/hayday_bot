@@ -312,6 +312,23 @@ class CalibratedFarmRegression(unittest.TestCase):
         self.assertEqual(markers, [(2,'transition_ripe')])
         self.assertEqual(states, ['growing','growing','ripe','growing','growing','empty'])
 
+    def test_transient_hud_obscured_by_reward_rechecks_without_input(self):
+        farm, _, attempts, _ = self.make_farm()
+        old_scan = farm.scan
+        obscured = False
+
+        def scan(*args, **kwargs):
+            nonlocal obscured
+            if attempts and not obscured:
+                obscured = True
+                raise EvidenceError('unconfirmed:farm_screen')
+            return old_scan(*args, **kwargs)
+
+        farm.scan = scan
+        result = farm.harvest_and_plant(limit=1)
+        self.assertEqual((result['harvested'], result['planted']), (1, 1))
+        self.assertEqual(attempts, [(0, False), (0, True)])
+
     def test_unknown_screen_stops_before_next_plot(self):
         farm, states, attempts, _ = self.make_farm()
         old_scan = farm.scan
