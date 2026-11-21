@@ -141,7 +141,8 @@ def calibrate_shop(bot: BlueStacksBot):
 
 def main():
     b = BlueStacksBot()
-    b.connect()
+    if not b.connect():
+        return
 
     pos = Positions(b)
     cmd = sys.argv[1] if len(sys.argv) > 1 else "sell"

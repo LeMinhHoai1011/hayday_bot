@@ -1,31 +1,69 @@
-﻿# Luồng xác nhận Hay Day
+# Vòng lúa mì trên BlueStacks 5
 
-GUI (`python gui_bot.py`), `run.py` và `auto_hayday.py` gọi chung `FarmWorkflow` / `ShopSeller`. Menu 8 và 11 hỏi số slot, giá tối đa. Chỉ các lệnh barn/silo/all và menu nâng cấp mới nâng kho; mặc định `sell_upgrade.py` chỉ bán.
+## Kết nối và chạy
 
-## Cấu hình
+Bật Android Debug Bridge trong **BlueStacks 5 → Settings → Advanced**. Mở đúng farm,
+giữ nguyên độ phân giải và zoom. Sửa \`adb\` và \`device\` trong \`bot_config.json\`
+(\`null\` dùng \`localhost:<port>\`). Ba điểm vào chính kiểm tra ADB, serial và ảnh PNG
+Android ngay khi kết nối. Cài các thư viện Python của dự án nếu môi trường chưa có
+\`opencv-python\`, \`numpy\` và \`Pillow\`.
 
-Sửa `bot_config.json`: adb, port hoặc device (serial ADB; null dùng localhost:port), debug_dir, timeout. Đường dẫn tương đối tính từ thư mục tool. `rois` ánh xạ tên ảnh mẫu sang `[left, top, right, bottom]` theo tỷ lệ 0–1 của screenshot Android để giới hạn vùng tìm kiếm. Ví dụ `"inventory_wheat": [0.1, 0.2, 0.7, 0.8]`. Chọn ROI theo màn hình thực tế, không dùng tọa độ cửa sổ Windows.
+1. Chạy \`python auto_hayday.py\`, chọn **9** và khoanh cụm ruộng. Vùng và ảnh tham
+   chiếu được lưu trong \`debug/field_calibration_*.npz\` theo thiết bị. Chọn lại sau
+   khi đổi độ phân giải, zoom hoặc kéo farm bằng tay.
+2. Chạy \`python auto_hayday.py debug\`. Ảnh \`debug_detect.png\` đánh dấu vùng tìm
+   màu xanh, tâm ô màu vàng và điểm chạm đầu tiên khoanh đỏ. Trong GUI, kéo vùng
+   ruộng trên ảnh rồi bấm **Quét lại** để dùng cùng bộ dò.
+3. Chạy \`python auto_hayday.py harvest 1\` hoặc \`python auto_hayday.py plant 1\`
+   để thử một thao tác. Lệnh \`python auto_hayday.py loop 1 1\` cào tối đa một ô,
+   gieo chính ô đó và thử bán dư. Dùng \`python auto_hayday.py loop\` cho vòng liên
+   tục. Hai tham số tùy chọn của \`loop\` là số vòng và số ô tối đa mỗi vòng.
+4. Với vòng liên tục, bot kiểm tra ảnh lúa chín trước khi bắt đầu lượt mới. Menu
+   **6** của \`auto_hayday.py\` cho đổi thời gian chờ mặc định 120 giây.
 
-Input dùng ADB có kiểm tra mã trả về, timeout; các hàm win_tap/win_harvest_swipe cũ vẫn có API tương thích nhưng chuyển sang Android input. Không giữ chuột Windows. Nếu BlueStacks không hỗ trợ input ADB, tool dừng và báo lỗi; chưa có backend chuột Windows với nhận diện viewport đã kiểm chứng.
+## Ảnh mẫu
 
-## Ảnh mẫu cần bổ sung trước khi dùng
+Các mẫu đã cắt trong \`templates/\` lấy từ ảnh Android 1600×900 trên BlueStacks ở
+mức zoom dùng để thử. Khi thay zoom/độ phân giải/giao diện, mở trạng thái tương
+ứng rồi chạy \`python run.py\`, chọn **2**, kéo vùng, nhấn Enter và nhập tên mẫu.
+Menu lưu ảnh gốc đã dùng để chọn, với độ phân giải gốc và đường dẫn
+\`templates_dir\` trong cấu hình. Căn giữa mẫu theo **mặt ô đất**, kể cả khi
+bông lúa cao hơn tâm ô. \`rois\` dùng tọa độ chuẩn hóa \`[trái, trên, phải, dưới]\`
+theo ảnh Android. Dùng vùng đủ rộng cho toàn bộ mẫu, kể cả vùng quả sau thao tác.
 
-Bộ ảnh có sẵn chỉ có `harvest.png`; **chưa đủ để chạy luồng mới**. Tool dừng với `missing_template:<tên>` và không click suy đoán. Chụp ảnh Android ở đúng độ phân giải/zoom; dùng menu 2 của `run.py` cắt mẫu, đặt tên sau (không thêm .png ở ô nhập tên). Chọn mẫu có hoa văn rõ, tránh ảnh đồng màu, tránh số lượng thay đổi, tránh nền farm nếu là trạng thái dialog. Cần kiểm tra template/ROI trên cả ảnh đúng và sai trước khi chạy tự động.
+| Chức năng | Tên mẫu (đuôi \`.png\`) |
+| --- | --- |
+| Cào | \`farm_screen\`, \`field_ripe\`, \`harvest_tool\`, \`field_empty\`, \`field_selected_ripe\` (viền sáng của ô khi liềm mở) |
+| Gieo | \`farm_screen\`, \`field_empty\`, \`seed_menu\`, \`crop_menu_wheat\`, \`field_growing\`, \`field_selected_empty\` (viền sáng của ô trong menu gieo) |
+| Bán | \`shop_stand\`, \`shop_screen\`, \`shop_slot_empty\`, \`shop_slot_wheat\`, \`shop_close\`, \`inventory_screen\`, \`inventory_wheat\`, \`inventory_close\`, \`wheat_selected\`, \`btn_price_max\`, \`price_max_reached\`, \`btn_put_sale\` |
+| Bán dư với số lượng điều chỉnh | \`btn_quantity_minus\`, \`price_max_reached_any_quantity\` |
+| Trạng thái shop cần ảnh bổ sung | \`shop_full\` chụp khi toàn bộ slot đang dùng đã đầy, với dấu hiệu phân biệt riêng. \`out_of_wheat\` chụp dấu hiệu hết lúa trong kho. Nếu không có ảnh phân biệt, bot ghi thiếu bằng chứng và đóng màn hình đã xác nhận khi có thể. |
 
-- Farm: `farm_screen` (dấu hiệu chỉ có ở farm), `field_ripe` (một ô lúa mì chín, tâm nằm trong ô), `field_empty` (một ô đất trống), `harvest_tool` (tâm công cụ để kéo về ô), `seed_menu`, `crop_menu_wheat` (trong menu hạt giống), `field_growing`.
-- Shop: `shop_stand` (mái sọc/quầy có cả chi tiết trắng và đỏ), `shop_screen`, `shop_slot_empty`, `inventory_screen`, `inventory_wheat`, `wheat_selected` (chi tiết xác nhận wheat đang được chọn), `btn_price_max`, `price_max_reached` (giá tối đa cho số lượng thực tế), `btn_put_sale`, `shop_slot_wheat` (lúa đang đăng trong slot), `shop_full`, `out_of_wheat` (chỉ báo hết lúa).
-- Nâng kho: `barn`, `silo`, `barn_screen`, `silo_screen`, `missing_materials`, `btn_upgrade`, `upgrade_confirm`, `btn_confirm`, `barn_upgraded`, `silo_upgraded`. Dấu hiệu upgraded phải xác nhận dung lượng tăng; không dùng nút đóng/cửa sổ biến mất làm bằng chứng. Chưa hỗ trợ đọc dung lượng bằng OCR.
+Sau khi chạm ô, bot xác nhận công cụ và dùng các mốc ngoài ruộng để bù dịch
+camera. Với vùng GUI đã khoanh, bot yêu cầu chọn lại khi ảnh lệch. Sau khi kéo,
+bot chờ hình ảnh đích và chỉ đếm ô khi thấy trạng thái mới tại chính tâm ô đó.
+\`debug/last_drag.png\` đánh dấu nguồn và đích của lượt kéo. Khi dừng vì thiếu bằng
+chứng, xem \`debug/steps.jsonl\` và các ảnh \`*_before.png\` / \`*_after.png\`.
 
-Mẫu field_empty/field_growing dùng xác nhận nên đủ nhỏ để nằm trong vùng 50×50 quanh tâm ô. Mẫu shop_slot_wheat nằm trong vùng 120×110 quanh tâm slot; đặt tâm mẫu slot_empty trùng tâm slot có lúa. Các mẫu không tự scale: thay độ phân giải/zoom phải chụp lại mẫu. Các mẫu price_max_reached/upgraded phụ thuộc giá/dung lượng đã hiệu chuẩn; cần cập nhật khi thay cấu hình đó.
+## Bán lúa dư
 
-## Hành vi và giới hạn
+Đặt \`wheat_seed_reserve\` bằng số hạt cần giữ cho toàn bộ vùng định gieo. Bản cấu
+hình này giữ tối thiểu 30 hạt. Bot còn giữ ít nhất số ô đã xác nhận trong lượt
+gieo. Để vòng lặp đọc số lượng, cấu hình \`tesseract\` thành đường dẫn đến
+\`tesseract.exe\` hoặc để \`tesseract\` trong PATH và hiệu chỉnh hai ROI chỉ chứa
+số \`inventory_wheat_count\` và \`sale_wheat_quantity\`. ROI thứ nhất phải bao số
+ngay cạnh ảnh lúa mì, ROI thứ hai bao lượng bán trên phiếu. Nếu chữ số không
+đọc được hoặc hai ảnh cho kết quả khác nhau, bot bỏ qua lượt bán và ghi lý do.
+Khi cần, bot hạ lượng đăng đến mức dư đã xác nhận rồi đọc lại trước khi gửi.
+Nếu gửi thành công nhưng ảnh trả về chưa rõ, bot chỉ kiểm tra lại đúng slot
+đã dùng. Khi quầy đầy có bằng chứng, bot đóng quầy và xác nhận trở lại farm.
 
-Mỗi lượt hiện xử lý một ô, lấy ảnh mới và nhận diện lại trước lượt kế; không kéo xuyên qua ô unknown/nền. Count là số chuyển trạng thái tại tâm ô đã xác nhận. Không dùng lưới ước lượng màu để đếm nữa. Camera dùng feature tracking + RANSAC ngoài vùng ruộng mục tiêu, loại biên HUD; thiếu ít nhất 8 mốc đồng thuận thì dừng và lưu ảnh. Mốc còn có thể nhầm cây động; cần kiểm tra trên farm thật. Khi camera trôi với vùng GUI do người dùng chọn, bot dừng yêu cầu chọn lại vùng; khi tự tìm ô thì nhận diện lại ảnh mới.
+Menu **8** của \`run.py\` và \`python sell_upgrade.py sell 1\` là lệnh bán theo
+số slot người dùng chọn. Vòng tự động mới tự tính phần dư. GUI và CLI dùng mutex
+Windows theo serial để chỉ một tác vụ điều khiển thiết bị. Nút **Dừng** chặn
+lệnh ADB tiếp theo sau lệnh đang chạy.
 
-Cào + Bán giữ khóa xuyên suốt hai bước, chỉ bán nếu thu được ít nhất một ô và thu hoạch kết thúc với `complete`. Shop luôn quét lại bằng mẫu mái sọc trên ảnh farm mới, không dùng cache. Chưa xác nhận đăng thì chỉ kiểm tra lại đúng slot, không bấm đăng lần nữa. Shop đầy/hết lúa chỉ kết luận khi có dấu hiệu riêng; thiếu dấu hiệu trả `unconfirmed`.
+## Kiểm thử
 
-Khóa Windows named mutex theo device loại trừ các tác vụ giữa GUI/CLI; cần dùng cùng serial device cho cùng emulator. Dừng ngăn input kế tiếp; ADB hiện tại được phép kết thúc hoặc timeout rồi mới báo Đã dừng. `debug/steps.jsonl` lưu thao tác, nguồn tọa độ, trạng thái, kết quả ADB, dịch camera và lý do dừng; ảnh before/after theo timestamp khi không xác nhận được.
-
-## Kiểm chứng
-
-`python -m unittest -v test_workflows` chạy kiểm thử offline bằng ảnh tổng hợp và bot giả, không thao tác BlueStacks. `python -m compileall -q .` kiểm tra cú pháp. Các kiểm thử này không thay thế nghiệm thu trên game thật. Phải bổ sung ảnh mẫu và chạy từng tình huống trong yêu cầu nghiệm thu trước khi coi phiên bản sẵn sàng dùng.
+\`python -m compileall -q .\` kiểm tra cú pháp.
+\`python -m unittest -v test_workflows\` chạy hồi quy offline.

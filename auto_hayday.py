@@ -1,5 +1,5 @@
 """
-Hay Day Auto Bot — phát hiện bằng màu HSV, không cần template thủ công.
+Hay Day Auto Bot — thao tác theo ảnh mẫu đã xác nhận.
 
 Cách dùng:
     python auto_hayday.py           # chạy menu
@@ -12,6 +12,9 @@ import time
 import cv2
 import numpy as np
 from bot import BlueStacksBot, ADB
+from bot_config import CONFIG
+from verified_workflow import (FarmWorkflow, HARVEST_TEMPLATES, PLANT_TEMPLATES,
+                               EvidenceError, WORKFLOW_ERRORS)
 from auto_calibrate import Positions, ElementDetector
 
 # ── Màu HSV đo thực tế từ game ────────────────────────────────────────────────
@@ -147,19 +150,20 @@ class HayDayAutoBot(BlueStacksBot):
         x, y, rw, rh = [v * 2 for v in roi]   # scale lại x2 (vì hiển thị ½)
         bbox = (x, y, rw, rh)
         pos = self._get_pos()
-        pos.set("field_bbox", bbox)
-        print(f"  [grid] Đã lưu field_bbox={bbox}")
+        with self.task():
+            farm = FarmWorkflow(self)
+            farm.v.point('farm_screen', sc)
+            fresh = farm.stable()
+            farm.zones = [(x, y, x+rw, y+rh)]
+            farm.reference = sc
+            farm.verify_frame(fresh)
+            farm.save_calibration(sc, farm.zones[0])
+        print(f"Đã lưu vùng ruộng {bbox} ở ảnh Android {sc.shape[1]}x{sc.shape[0]}.")
 
     def reset_field_bbox(self):
-        """Xóa cache bbox để detect lại — gọi khi farm mở rộng hoặc thay đổi."""
-        pos = self._get_pos()
-        if "field_bbox" in pos._data:
-            del pos._data["field_bbox"]
-            pos._save_file()
-            print("  [grid] Đã xóa cache field_bbox.")
-            print("  [grid] Chạy menu 9 (Calibrate field) để mark lại vùng mới.")
-        else:
-            print("  [grid] Không có cache field_bbox.")
+        path = FarmWorkflow(self).calibration_path
+        path.unlink(missing_ok=True)
+        print("Đã xóa vùng hiệu chỉnh. Dùng menu 9 để chọn lại.")
 
     def _field_grid_points(self, sc: np.ndarray) -> list[tuple[int, int]]:
         """
@@ -355,96 +359,23 @@ class HayDayAutoBot(BlueStacksBot):
 
     # ── Debug view ────────────────────────────────────────────────────────────
 
-    def debug_view(self, save_path: str = "debug_detect.png"):
-        """Chụp + vẽ tất cả vùng phát hiện lên ảnh để kiểm tra."""
-        sc  = self.screenshot()
-        vis = sc.copy()
-        h, w = sc.shape[:2]
-
-        color_map = {
-            "CHÍN":      (0,   220,  255),   # vàng
-            "TRỐNG":     (0,   120,  255),   # cam
-            "ĐANG MỌC":  (0,   255,   80),   # xanh
-        }
-        all_regions = (
-            self.find_ripe_fields(sc) +
-            self.find_empty_fields(sc) +
-            self.find_growing_fields(sc)
-        )
-        for r in all_regions:
-            x, y, rw, rh = r["bbox"]
-            cx, cy = r["center"]
-            col = color_map.get(r["label"], (255, 255, 255))
-            cv2.rectangle(vis, (x,y), (x+rw, y+rh), col, 2)
-            cv2.circle(vis, (cx, cy), 6, col, -1)
-            cv2.putText(vis, f"{r['label']} {r['area']:.0f}",
-                        (x, y-6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
-
-        # Đánh dấu vị trí nút lúa mì trong menu
-        wx, wy = int(w * WHEAT_X_FRAC), int(h * MENU_Y_FRAC)
-        cv2.drawMarker(vis, (wx, wy), (255,0,255), cv2.MARKER_CROSS, 30, 2)
-        cv2.putText(vis, "WHEAT BTN", (wx+15, wy),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255,0,255), 1)
-
-        # Vẽ field bbox (trắng) + tất cả grid points (xanh lam)
-        bbox = self._find_field_bbox(sc)
-        if bbox:
-            bx, by, bw, bh = bbox
-            cv2.rectangle(vis, (bx, by), (bx+bw, by+bh), (255, 255, 255), 2)
-            cv2.putText(vis, "FIELD", (bx, by-8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-        pts = self._field_grid_points(sc)
-        for px, py in pts:
-            state = self._sample_plot(sc, px, py)
-            dot_col = {
-                "ripe":    (0, 220, 255),
-                "empty":   (0, 120, 255),
-                "growing": (0, 255, 80),
-            }.get(state, (160, 160, 160))
-            cv2.circle(vis, (px, py), SAMPLE_R, dot_col, 1)
-            cv2.circle(vis, (px, py), 4, dot_col, -1)
-
-        cv2.imwrite(save_path, vis)
-        print(f"  Debug ảnh: {save_path}")
-        print(f"  Chín: {sum(1 for r in all_regions if r['label']=='CHÍN')}  "
-              f"Trống: {sum(1 for r in all_regions if r['label']=='TRỐNG')}  "
-              f"Đang mọc: {sum(1 for r in all_regions if r['label']=='ĐANG MỌC')}")
-        if pts:
-            print(f"  Grid: {len(pts)} điểm trong bbox cánh đồng")
-        return vis, all_regions
-
-    # ── Tinh chỉnh vị trí nút lúa mì ─────────────────────────────────────────
+    def debug_view(self, save_path="debug_detect.png"):
+        farm = FarmWorkflow(self)
+        try:
+            vis, points = farm.preview(farm.stable())
+            if not cv2.imwrite(save_path, vis):
+                raise OSError(f"Cannot save {save_path}")
+            print(f"{len(points)} ripe fields; next tap: {points[0][:2] if points else None}")
+            return vis, points
+        except WORKFLOW_ERRORS as error:
+            farm.fail(error)
+            return None
 
     def calibrate_wheat_button(self):
-        """
-        Tap vào một ruộng trống, chụp màn hình, rồi dùng ROI để xác định
-        chính xác vị trí nút lúa mì trong menu.
-        """
-        sc = self.screenshot()
-        empty = self.find_empty_fields(sc)
-        if not empty:
-            print("  Cần có ruộng trống để calibrate.")
-            return
-        cx, cy = empty[0]["center"]
-        print(f"  Tap ruộng trống ({cx},{cy})...")
-        self.tap(cx, cy, delay=0.8)
-        sc2 = self.screenshot()
-        half = cv2.resize(sc2, (sc2.shape[1]//2, sc2.shape[0]//2))
-        roi = cv2.selectROI(
-            "Chọn NÚT LÚA MÌ trong menu (Enter xác nhận, C hủy)", half
-        )
-        cv2.destroyAllWindows()
-        self.back()
-        if roi[2] == 0: return
-        x, y, rw, rh = [v*2 for v in roi]
-        bx, by = x + rw//2, y + rh//2
-        h, w = sc2.shape[:2]
-        global WHEAT_X_FRAC, MENU_Y_FRAC
-        WHEAT_X_FRAC = bx / w
-        MENU_Y_FRAC  = by / h
-        print(f"  Nút lúa mì: pixel=({bx},{by})  "
-              f"fraction=({WHEAT_X_FRAC:.3f}, {MENU_Y_FRAC:.3f})")
-        print(f"  Cập nhật WHEAT_X_FRAC={WHEAT_X_FRAC:.3f}, MENU_Y_FRAC={MENU_Y_FRAC:.3f} vào file nếu muốn lưu.")
+        from hayday import HayDayBot
+
+        print("Mở menu gieo trong BlueStacks rồi cắt mẫu crop_menu_wheat.")
+        HayDayBot.capture_template_interactive(self)
 
     def dismiss_popups(self) -> bool:
         """Đóng popup phổ biến (event, tin tức, level up). Trả về True nếu đã đóng."""
@@ -488,66 +419,86 @@ class HayDayAutoBot(BlueStacksBot):
         from sell_upgrade import ShopSeller
         return ShopSeller(self, self._get_pos()).run(slots=count)
 
-    def run_loop(self, interval: float = 65.0, max_cycles: int = 0):
-        """
-        Vòng lặp chính:
-          1. Thu hoạch tất cả ruộng chín
-          2. Trồng lại tất cả ruộng trống
-          3. Chờ interval giây (đủ cho lúa mì 1p + buffer)
-        """
-        print("=" * 50)
-        print("  🌾 HAY DAY AUTO LOOP — Ctrl+C để dừng")
-        print(f"  Interval: {interval}s")
-        print("=" * 50)
+    def run_loop(self, interval=120.0, max_cycles=0, limit=None):
+        from sell_upgrade import ShopSeller
+
+        farm = FarmWorkflow(self)
         cycle = 0
+        reserve = CONFIG.get('wheat_seed_reserve', 0)
         try:
-            while True:
-                cycle += 1
-                ts = time.strftime("%H:%M:%S")
-                print(f"\n[Cycle {cycle}] {ts}")
-
-                with self.task():
-                    self.harvest_ripe()
-                    if self.last_reason not in ("complete", "no_confirmed_fields"):
-                        break
-                    self.plant_empty()
-                    if self.last_reason not in ("complete", "no_confirmed_fields"):
-                        break
-
-                if max_cycles and cycle >= max_cycles:
-                    print(f"  Đủ {max_cycles} lần, dừng.")
-                    break
-
-                print(f"  Chờ {interval}s...")
-                time.sleep(interval)
+            if interval <= 0 or max_cycles < 0:
+                raise EvidenceError('interval must be positive and max_cycles cannot be negative')
+            with self.task():
+                farm.v.require(tuple(dict.fromkeys(HARVEST_TEMPLATES + PLANT_TEMPLATES)))
+                while True:
+                    image = farm.stable()
+                    farm.verify_frame(image)
+                    ripe = farm.fields('field_ripe', image)
+                    if not ripe:
+                        farm.log('ripeness_check', confirmed=0)
+                        self.stop_event.wait(interval)
+                        farm.check()
+                        continue
+                    farm.log('ripeness_check', confirmed=len(ripe))
+                    harvested = farm.run(limit=limit)
+                    if farm.reason == 'no_confirmed_fields':
+                        self.stop_event.wait(interval)
+                        farm.check()
+                        continue
+                    if farm.reason != 'complete':
+                        return
+                    targets = farm.confirmed.copy()
+                    planted = farm.run(plant=True, limit=harvested, targets=targets)
+                    if farm.reason != 'complete' or planted != harvested:
+                        if farm.reason in ('complete', 'no_confirmed_fields'):
+                            farm.fail(EvidenceError('replant_incomplete'))
+                        return
+                    cycle += 1
+                    deadline = time.monotonic() + interval
+                    reserve = max(reserve, planted, len(ripe))
+                    seller = ShopSeller(self, self._get_pos())
+                    sold = seller.run(slots=10, reserve=reserve, deadline=deadline)
+                    if seller.reason not in ('complete', 'shop_full', 'shop_slots_unconfirmed',
+                                             'no_surplus', 'out_of_wheat'):
+                        if not seller.reason.startswith(('stock_unconfirmed:', 'missing_template:')):
+                            return
+                    # Before continuing, check that closing the shop restored the same farm view.
+                    image = farm.stable()
+                    farm.verify_frame(image)
+                    farm.log('cycle', harvested=harvested, planted=planted, sold_slots=sold)
+                    if max_cycles and cycle >= max_cycles:
+                        farm.log('stop', reason='cycle_limit')
+                        return
+                    self.stop_event.wait(max(0, deadline-time.monotonic()))
+                    farm.check()
         except KeyboardInterrupt:
-            print("\n  Dừng loop.")
+            self.stop_event.set()
+            farm.fail(EvidenceError('keyboard_interrupt'))
+        except WORKFLOW_ERRORS as error:
+            farm.fail(error)
 
-
-# ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
     bot = HayDayAutoBot()
     if not bot.connect():
-        if not bot.auto_connect():
-            print("Không kết nối được BlueStacks. Bật ADB trong Settings > Advanced.")
-            return
+        return
 
     if len(sys.argv) > 1:
         cmd = sys.argv[1]
         if cmd == "loop":
-            bot.run_loop()
+            bot.run_loop(max_cycles=int(sys.argv[2]) if len(sys.argv) > 2 else 0,
+                         limit=int(sys.argv[3]) if len(sys.argv) > 3 else None)
             return
         if cmd == "debug":
-            bot.debug_view()
-            import subprocess
-            subprocess.Popen(["explorer", "debug_detect.png"])
+            if bot.debug_view() is not None:
+                import subprocess
+                subprocess.Popen(["explorer", "debug_detect.png"])
             return
         if cmd == "harvest":
-            bot.harvest_ripe()
+            FarmWorkflow(bot).run(limit=int(sys.argv[2]) if len(sys.argv) > 2 else None)
             return
         if cmd == "plant":
-            bot.plant_empty()
+            FarmWorkflow(bot).run(plant=True, limit=int(sys.argv[2]) if len(sys.argv) > 2 else None)
             return
 
     # Menu tương tác
@@ -556,11 +507,11 @@ def main():
         print("  🌾 HAY DAY AUTO BOT")
         print("="*45)
         print("  1. Debug: xem vùng phát hiện (chụp + tô màu)")
-        print("  2. Tinh chỉnh vị trí nút lúa mì (calibrate)")
+        print("  2. Cắt mẫu nút lúa mì từ ảnh BlueStacks")
         print("  3. Thu hoạch tất cả ruộng chín")
         print("  4. Trồng lại tất cả ruộng trống")
         print("  5. 1 lần: harvest + plant")
-        print("  6. Auto loop liên tục (harvest → plant → chờ)")
+        print("  6. Auto loop (cào → gieo → bán dư → kiểm tra chín)")
         print("  7. Bán lúa mì trong shop (giá MAX)")
         print("  8. Reset field bbox (khi farm thay đổi)")
         print("  9. Calibrate field: kéo chọn vùng cánh đồng lúa")
@@ -570,9 +521,9 @@ def main():
         c = input("  Chọn: ").strip()
 
         if c == "1":
-            bot.debug_view()
-            import subprocess
-            subprocess.Popen(["explorer", "debug_detect.png"])
+            if bot.debug_view() is not None:
+                import subprocess
+                subprocess.Popen(["explorer", "debug_detect.png"])
 
         elif c == "2":
             bot.calibrate_wheat_button()
@@ -584,15 +535,19 @@ def main():
             bot.plant_empty()
 
         elif c == "5":
-            sc = bot.screenshot()
-            bot.harvest_ripe(sc)
-            time.sleep(1)
-            sc = bot.screenshot()
-            bot.plant_empty(sc)
+            farm = FarmWorkflow(bot)
+            try:
+                with bot.task():
+                    farm.v.require(tuple(dict.fromkeys(HARVEST_TEMPLATES + PLANT_TEMPLATES)))
+                    harvested = farm.run()
+                    if harvested and farm.reason == 'complete':
+                        farm.run(plant=True, limit=harvested, targets=farm.confirmed)
+            except WORKFLOW_ERRORS as error:
+                farm.fail(error)
 
         elif c == "6":
-            iv = input("  Chờ bao nhiêu giây giữa mỗi lần? (mặc định 65 cho lúa mì): ").strip()
-            bot.run_loop(interval=float(iv) if iv else 65.0)
+            iv = input("  Chờ bao nhiêu giây giữa mỗi lần? (mặc định 120 cho lúa mì): ").strip()
+            bot.run_loop(interval=float(iv) if iv else 120.0)
 
         elif c == "7":
             n = input("  Bán bao nhiêu lần? (mặc định 1): ").strip()
@@ -602,7 +557,10 @@ def main():
             bot.reset_field_bbox()
 
         elif c == "9":
-            bot.calibrate_field_region()
+            try:
+                bot.calibrate_field_region()
+            except WORKFLOW_ERRORS as error:
+                print(error)
 
         elif c == "10":
             n = input("  Cuộn lên mấy lần? (mặc định 3): ").strip()

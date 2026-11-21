@@ -123,17 +123,8 @@ def main():
     print("[bot] Khởi động...")
     bot = HayDayBot(port=ADB_PORT)
 
-    # Thử kết nối
     if not bot.connect():
-        print("[bot] Thử auto-scan các port BlueStacks...")
-        if not bot.auto_connect():
-            print("\n[HƯỚNG DẪN BẬT ADB TRÊN BLUESTACKS]")
-            print("  1. Mở BlueStacks")
-            print("  2. Vào Settings (bánh răng) → Advanced")
-            print("  3. Bật 'Android Debug Bridge'")
-            print("  4. Lưu ý port hiển thị (thường 5555)")
-            print(f"  5. Sửa ADB_PORT trong run.py nếu khác 5555")
-            sys.exit(1)
+        sys.exit(1)
 
     menu(bot)
 

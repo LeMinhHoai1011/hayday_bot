@@ -32,15 +32,17 @@ class Bot:
     def tap(self,x,y):
         self.check_stop()
         self.taps.append((x,y))
-        self.phase = {(10,10):'shop_screen',(50,50):'inventory_screen',(150,50):'inventory_screen',(20,20):'wheat_selected',(30,30):'max',(40,40):'shop_screen'}[(x,y)]
+        self.phase = {(10,10):'shop_screen',(50,50):'inventory_screen',(150,50):'inventory_screen',(20,20):'wheat_selected',(30,30):'max',(40,40):'shop_screen',(45,45):'shop_screen',(46,46):'farm_screen'}[(x,y)]
         if (x,y)==(40,40) and not self.fail_sale:
             self.slots+=1
     def back(self):
         self.check_stop()
-        self.phase='farm_screen'
+        self.phase = 'shop_screen' if self.phase in ('inventory_screen', 'wheat_selected', 'max') else 'farm_screen'
 
 class SemanticVision:
     def __init__(self,b): self.b=b
+    def require(self, names):
+        pass
     def matches(self,name,image,roi=None):
         b=self.b
         if name=='shop_stand': return [(10,10,.99)]
@@ -48,6 +50,8 @@ class SemanticVision:
         if name=='shop_full': return [(1,1,.99)] if b.full else []
         if name=='inventory_wheat': return [] if b.no_wheat else [(20,20,.99)]
         if name=='out_of_wheat': return [(1,1,.99)] if b.no_wheat else []
+        if name=='inventory_close': return [(45,45,.99)]
+        if name=='shop_close': return [(46,46,.99)]
         if name=='btn_price_max': return [(30,30,.99)]
         if name=='btn_put_sale': return [(40,40,.99)]
         if name=='shop_slot_wheat':
@@ -87,10 +91,23 @@ class Regression(unittest.TestCase):
         b=Bot();b.full=True;s=self.seller(b)
         self.assertEqual(s.run(2),0)
         self.assertEqual(s.reason,'shop_full')
+        self.assertEqual(b.phase,'farm_screen')
     def test_no_wheat(self):
         b=Bot();b.no_wheat=True;s=self.seller(b)
         self.assertEqual(s.run(2),0)
         self.assertEqual(s.reason,'out_of_wheat')
+    def test_unknown_wheat_in_inventory_returns_to_farm(self):
+        b = Bot()
+        b.no_wheat = True
+        seller = self.seller(b)
+        with patch('shutil.which', return_value='tesseract.exe'), patch.dict(
+                'verified_workflow.CONFIG', {'rois': {'inventory_wheat_count': [],
+                                                      'sale_wheat_quantity': []}}):
+            self.assertEqual(seller.run(reserve=20), 0)
+        self.assertEqual(seller.reason, 'stock_unconfirmed:inventory_wheat')
+        self.assertEqual(b.phase, 'farm_screen')
+        self.assertNotIn((40, 40), b.taps)
+
     def test_stop_prevents_next_tap(self):
         b=Bot();s=self.seller(b)
         old=s.select_wheat
@@ -107,6 +124,14 @@ class Regression(unittest.TestCase):
         dx,dy=Vision(None).camera(before,after,[(200,100,400,300)])
         self.assertAlmostEqual(dx,9,delta=.8)
         self.assertAlmostEqual(dy,-6,delta=.8)
+    def test_large_camera_pan_excludes_static_hud(self):
+        rng = np.random.default_rng(6)
+        before = rng.integers(0, 256, (400, 600, 3), dtype=np.uint8)
+        after = cv2.warpAffine(before, np.float32([[1, 0, 0], [0, 1, 110]]), (600, 400))
+        after[:, :50] = before[:, :50]
+        after[:, -50:] = before[:, -50:]
+        self.assertEqual(Vision(None).camera(before, after), (0, 110))
+
     def test_missing_landmarks(self):
         image=np.zeros((400,600,3),np.uint8)
         with self.assertRaises(EvidenceError): Vision(None).camera(image,image)
@@ -115,23 +140,122 @@ class Regression(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict('verified_workflow.CONFIG',{'templates_dir':directory}):
             self.assertEqual(s.run(),0)
         self.assertEqual(b.taps,[])
-        self.assertEqual(s.reason,'missing_template:farm_screen')
+        self.assertIn('farm_screen.png', s.reason)
+        self.assertIn('shop_slot_wheat.png', s.reason)
     def test_adb_failure_propagates(self):
         import subprocess
         b=BlueStacksBot()
+        b.device = 'offline-adb-error-test'
         with patch('bot.subprocess.run',side_effect=subprocess.CalledProcessError(1,['adb'])):
             with self.assertRaises(subprocess.CalledProcessError): b.tap(1,2)
+    def farm(self, *, plant=False, move=0, manual=False):
+        b = Bot()
+        b.phase = 'field_empty' if plant else 'field_ripe'
+        b.drags = []
+        previous = b.phase
+        result = 'field_growing' if plant else 'field_empty'
+
+        def tap(x, y):
+            b.taps.append((x, y))
+            b.phase = 'tool'
+
+        def drag(*coords):
+            b.drags.append(coords)
+            b.phase = result
+
+        class FieldVision:
+            def tool_open(self, image):
+                return False
+
+            def require(self, names):
+                pass
+
+            def point(self, name, image):
+                if name in ('seed_menu', 'crop_menu_wheat', 'harvest_tool'):
+                    if b.phase != 'tool':
+                        raise EvidenceError('unconfirmed:' + name)
+                return (20, 30)
+
+            def matches(self, name, image, roi=None):
+                if b.phase == previous and name == previous:
+                    return [(50, 50, .99)]
+                if b.phase == 'tool' and name == previous:
+                    return [(50+move, 50, .99)]
+                if b.phase == result and name == result:
+                    return [(50+move, 50, .99)]
+                return []
+
+            def camera(self, before, after, excluded):
+                return (move, 0) if b.phase == 'tool' else (0, 0)
+
+        b.tap, b.drag = tap, drag
+        f = FarmWorkflow(b, zones=[(0, 0, 100, 100)] if manual else None)
+        if not manual:
+            f.zones = [(0, 0, 100, 100)]  # A saved calibration was loaded.
+        f.stable = b.screenshot
+        f.log = lambda *a, **k: None
+        f.fail = lambda error, *a: setattr(f, 'reason', str(error))
+        f.v = FieldVision()
+        return b, f
+
+    def test_plant_drags_seed_to_same_empty_cell(self):
+        b, f = self.farm(plant=True)
+        self.assertEqual(f.run(plant=True, limit=1), 1)
+        self.assertEqual(b.taps, [(50, 50)])
+        self.assertEqual(b.drags, [(20, 30, 50, 50)])
+
+    def test_harvest_waits_for_transient_bundle_without_dragging_again(self):
+        b, f = self.farm()
+        matches = f.v.matches
+        observations = []
+
+        def without_first_empty(name, image, roi=None):
+            if name == b.phase == 'field_empty':
+                observations.append(name)
+                if len(observations) == 1:
+                    return []
+            return matches(name, image, roi)
+
+        f.v.matches = without_first_empty
+        self.assertEqual(f.run(limit=1), 1)
+        self.assertEqual(len(observations), 2)
+        self.assertEqual(len(b.drags), 1)
+
+    def test_camera_shift_rescans_before_harvest(self):
+        b, f = self.farm(move=10)
+        self.assertEqual(f.run(limit=1), 1)
+        self.assertEqual(b.drags, [(20, 30, 60, 50)])
+
     def test_camera_drift_stops_user_zones(self):
-        b=Bot();f=FarmWorkflow(b);f.stable=b.screenshot
-        f.log=lambda *a,**k:None
-        f.fail=lambda error,*a:setattr(f,'reason',str(error))
-        class V:
-            def point(self,*a): return (20,20)
-            def matches(self,name,*a): return [(50,50,.99)]
-            def camera(self,*a): return (10,0)
-        f.v=V()
-        self.assertEqual(f.run(zones=[(0,0,100,100)]),0)
-        self.assertEqual(f.reason,'camera_moved_opening_tool')
+        b, f = self.farm(move=10, manual=True)
+        self.assertEqual(f.run(), 0)
+        self.assertTrue(f.reason.startswith('camera_moved_reselect_zones'))
+        self.assertEqual(b.drags, [])
+
+    def test_missing_result_template_prevents_opening_tool(self):
+        b, f = self.farm(plant=True)
+        f.v = Vision(b)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                'verified_workflow.CONFIG', {'templates_dir': directory}):
+            for name in ('farm_screen', 'field_empty', 'seed_menu', 'crop_menu_wheat', 'field_selected_empty'):
+                image = np.arange(75, dtype=np.uint8).reshape((5, 5, 3))
+                cv2.imwrite(directory + '/' + name + '.png', image)
+            self.assertEqual(f.run(plant=True), 0)
+        self.assertIn('field_growing.png', f.reason)
+        self.assertFalse(b.taps or b.drags)
+
+    def test_sale_limits_quantity_to_confirmed_surplus(self):
+        b = Bot()
+        b.phase = 'inventory_screen'
+        s = self.seller(b)
+        numbers = iter([18, 10, 9, 8])
+        s.confirmed_number = lambda *a: next(numbers)
+        old_point = s.v.point
+        s.v.point = lambda name, image: (25, 25) if name == 'btn_quantity_minus' else old_point(name, image)
+        tap = b.tap
+        b.tap = lambda x, y: b.taps.append((x, y)) if (x, y) == (25, 25) else tap(x, y)
+        self.assertEqual(s.select_surplus(10), 8)
+        self.assertEqual(b.taps.count((25, 25)), 2)
 
 class Integration(unittest.TestCase):
     def test_menu_8_through_13(self):
@@ -148,8 +272,33 @@ class Integration(unittest.TestCase):
                     upgrade.assert_called_once_with(bot,positions.return_value)
                 if choice in (12,13):
                     launch.assert_called_once_with(["explorer","farm.png" if choice==12 else "shop.png"])
+    def test_template_crop_uses_the_previewed_android_frame(self):
+        from hayday import HayDayBot
+        from pathlib import Path
+        bot = HayDayBot()
+        image = np.arange(100*160*3, dtype=np.uint8).reshape((100, 160, 3))
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                'bot_config.CONFIG', {'templates_dir': directory}), patch.object(
+                bot, 'screenshot', return_value=image) as screenshot, patch(
+                'hayday.cv2.selectROI', return_value=(5, 8, 14, 12)), patch(
+                'hayday.cv2.destroyAllWindows'), patch('builtins.print'), patch(
+                'builtins.input', return_value='field_ripe.png'):
+            bot.capture_template_interactive()
+            saved = cv2.imread(str(Path(directory) / 'field_ripe.png'))
+        screenshot.assert_called_once()
+        np.testing.assert_array_equal(saved, image[16:40, 10:38])
+
+    def test_unknown_stock_skips_without_adb_input(self):
+        b = Bot()
+        seller = Regression().seller(b)
+        with patch('shutil.which', return_value=None):
+            self.assertEqual(seller.run(reserve=20), 0)
+        self.assertIn('stock_unconfirmed', seller.reason)
+        self.assertEqual(b.taps, [])
+
     def test_device_lock_excludes_other_thread(self):
         first=BlueStacksBot();second=BlueStacksBot();results=[]
+        first.device = second.device = 'offline-device-lock-test'
         def concurrent():
             try:
                 with second.task(): results.append("entered")

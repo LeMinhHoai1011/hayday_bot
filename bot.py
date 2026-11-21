@@ -6,7 +6,7 @@ Dùng ADB để chụp màn hình + OpenCV để nhận dạng + ADB để thao 
 import subprocess
 import threading
 import contextlib
-from bot_config import CONFIG
+from bot_config import CONFIG, resolve
 import time
 import io
 import os
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 ADB = CONFIG["adb"]
-TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
+TEMPLATES_DIR = str(resolve(CONFIG["templates_dir"]))
 
 
 @dataclass
@@ -97,17 +97,31 @@ class BlueStacksBot:
             raise
         except subprocess.TimeoutExpired:
             print(f"[bot] ADB timeout ({timeout}s): {' '.join(str(a) for a in args[:3])}")
-            raise RuntimeError("ADB timeout")
+            raise RuntimeError(f"ADB timeout after {timeout}s for {self.device}: {args[0]}")
 
     def connect(self) -> bool:
-        r = subprocess.run([self.adb, "connect", self.device], capture_output=True, text=True, timeout=CONFIG["timeout"])
-        ok = r.returncode == 0 and ("connected to" in r.stdout or "already connected" in r.stdout)
-        if ok:
-            print(f"[bot] Connected to BlueStacks @ {self.device}")
-        else:
-            print(f"[bot] Connect failed: {r.stdout.strip()}")
-            print("  Thử: Bật BlueStacks, vào Settings > Advanced > Android Debug Bridge > bật ON")
-        return ok
+        """Validate the configured executable, serial and Android screenshot."""
+        self.adb = str(resolve(self.adb))
+        try:
+            if not os.path.isfile(self.adb):
+                raise RuntimeError(f"ADB executable not found: {self.adb} (bot_config.json)")
+            state = self._run("get-state", check=False)
+            if state.stdout.strip() != b"device" and ":" in self.device:
+                self.check_stop()
+                subprocess.run([self.adb, "connect", self.device], capture_output=True,
+                               timeout=CONFIG["timeout"])
+                state = self._run("get-state", check=False)
+            if state.stdout.strip() != b"device":
+                detail = (state.stderr or state.stdout).decode(errors="replace").strip()
+                raise RuntimeError(f"ADB device {self.device} is not connected/ready: {detail}")
+            self.screenshot()
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            self.last_reason = str(error)
+            print(f"[bot] {self.last_reason}")
+            return False
+        self.last_reason = "ready"
+        print(f"[bot] Connected to BlueStacks @ {self.device}; screenshot verified")
+        return True
 
     def auto_connect(self) -> bool:
         """Thử các port phổ biến của BlueStacks."""
@@ -149,19 +163,19 @@ class BlueStacksBot:
 
     def screenshot(self) -> np.ndarray:
         """Chụp màn hình BlueStacks, trả về ảnh BGR numpy array."""
-        # exec-out stream PNG bytes trực tiếp, tránh lỗi pull trên BlueStacks Windows
-        cmd = [self.adb, "-s", self.device, "exec-out", "screencap", "-p"]
-        r = subprocess.run(cmd, capture_output=True, check=True, timeout=CONFIG["timeout"])
-        data = r.stdout
-        if len(data) < 100:
-            raise RuntimeError(
-                f"Screenshot thất bại (nhận {len(data)} bytes) — "
-                "BlueStacks có đang chạy và ADB được bật không?"
-            )
-        arr = np.frombuffer(data, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        try:
+            data = self._run("exec-out", "screencap", "-p").stdout
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or b"").decode(errors="replace").strip()
+            raise RuntimeError(f"ADB screenshot failed for {self.device}: {detail}") from error
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise RuntimeError(f"Invalid Android screenshot PNG ({len(data)} bytes)")
+        try:
+            img = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        except cv2.error as error:
+            raise RuntimeError("Invalid Android screenshot: PNG decode failed") from error
         if img is None:
-            raise RuntimeError("Không giải mã được ảnh PNG từ BlueStacks.")
+            raise RuntimeError("Invalid Android screenshot: PNG decode failed")
         return img
 
     def save_screenshot(self, path: str) -> str:
@@ -251,11 +265,10 @@ class BlueStacksBot:
             self.tap_match(m, delay)
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300):
-        """Swipe via ADB; falls back to PostMessage if ADB shell fails."""
+        """Swipe in Android screenshot coordinates."""
         r = self._run("shell", "input", "swipe",
                       str(x1), str(y1), str(x2), str(y2), str(duration_ms))
         if r.returncode != 0 or b"error" in r.stderr:
-            # ADB shell không hoạt động → dùng PostMessage
             raise RuntimeError("ADB swipe failed")
         else:
             time.sleep(0.2)
@@ -272,6 +285,9 @@ class BlueStacksBot:
 
     def win_tap(self, x, y, **kwargs):
         return self.tap(x, y)
+
+    def drag(self, x1, y1, x2, y2, duration_ms=700):
+        self._run("shell", "input", "draganddrop", *map(str, (x1, y1, x2, y2, duration_ms)))
 
     def back(self):
         self._run("shell", "input", "keyevent", "4")

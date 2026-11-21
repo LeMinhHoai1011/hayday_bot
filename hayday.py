@@ -119,19 +119,30 @@ class HayDayBot(BlueStacksBot):
         Chụp màn hình hiện tại, hiện lên để chọn vùng template bằng chuột.
         Dùng để tạo template mới dễ dàng.
         """
-        print("[hayday] Chụp màn hình BlueStacks...")
-        sc = self.screenshot()
-        half = cv2.resize(sc, (sc.shape[1]//2, sc.shape[0]//2))
+        import re
+        from bot_config import CONFIG, resolve
 
-        roi = cv2.selectROI("Kéo chọn vùng template, Enter để xác nhận, C để hủy", half)
+        image = self.screenshot()
+        h, w = image.shape[:2]
+        preview = cv2.resize(image, (w // 2, h // 2))
+        ph, pw = preview.shape[:2]
+        x, y, rw, rh = cv2.selectROI("Select template - Enter / C to cancel", preview,
+                                     fromCenter=False)
         cv2.destroyAllWindows()
-        if roi[2] == 0 or roi[3] == 0:
-            print("[hayday] Hủy.")
+        if not rw or not rh:
             return
-        x, y, w, h = [v*2 for v in roi]  # scale lại vì đã resize về 1/2
-        name = input("Nhập tên template (vd: harvest_ready): ").strip()
-        if name:
-            self.save_region_as_template(x, y, w, h, name)
+        name = input("Tên ảnh mẫu (vd. field_ripe): ").strip().removesuffix(".png")
+        if not re.fullmatch(r"[A-Za-z0-9_]+", name):
+            print("Tên ảnh mẫu chỉ gồm chữ, số và dấu gạch dưới.")
+            return
+        x0, x1 = round(x*w/pw), round((x+rw)*w/pw)
+        y0, y1 = round(y*h/ph), round((y+rh)*h/ph)
+        directory = resolve(CONFIG["templates_dir"])
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / (name + ".png")
+        if not cv2.imwrite(str(path), image[y0:y1, x0:x1]):
+            raise OSError(f"Cannot save {path}")
+        print(f"Đã lưu {path} từ ảnh Android {w}x{h}")
 
     def debug_scan(self, template_name: str, threshold: float = 0.75):
         """Chụp màn hình và hiện kết quả nhận dạng để debug."""

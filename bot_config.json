@@ -1,4 +1,4 @@
-﻿{
+{
   "adb": "C:\\Users\\LENOVO\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe",
   "port": 5555,
   "device": null,
@@ -8,5 +8,104 @@
   "match_threshold": 0.88,
   "stable_threshold": 1.5,
   "camera_threshold": 3.0,
-  "rois": {}
+  "rois": {
+    "farm_screen": [
+      0.0,
+      0.212222,
+      0.06875,
+      0.322222
+    ],
+    "shop_screen": [
+      0.2375,
+      0.033333,
+      0.7525,
+      0.161111
+    ],
+    "shop_slot_empty": [
+      0.125,
+      0.242222,
+      0.86875,
+      0.802222
+    ],
+    "shop_close": [
+      0.7975,
+      0.027778,
+      0.88125,
+      0.168889
+    ],
+    "inventory_screen": [
+      0.61125,
+      0.118889,
+      0.8125,
+      0.208889
+    ],
+    "inventory_wheat": [
+      0.203125,
+      0.183333,
+      0.28875,
+      0.322222
+    ],
+    "inventory_close": [
+      0.809375,
+      0.035556,
+      0.89,
+      0.177778
+    ],
+    "wheat_selected": [
+      0.615625,
+      0.123333,
+      0.80625,
+      0.207778
+    ],
+    "btn_quantity_minus": [
+      0.58375,
+      0.216667,
+      0.655,
+      0.34
+    ],
+    "btn_price_max": [
+      0.73,
+      0.486667,
+      0.784375,
+      0.582222
+    ],
+    "price_max_reached": [
+      0.6775,
+      0.4,
+      0.73875,
+      0.476667
+    ],
+    "btn_put_sale": [
+      0.5875,
+      0.88,
+      0.840625,
+      0.991111
+    ],
+    "inventory_wheat_count": [
+      0.259375,
+      0.257778,
+      0.305,
+      0.327778
+    ],
+    "sale_wheat_quantity": [
+      0.653125,
+      0.24,
+      0.7125,
+      0.31
+    ],
+    "price_max_reached_any_quantity": [
+      0.73,
+      0.486667,
+      0.784375,
+      0.582222
+    ]
+  },
+  "match_thresholds": {
+    "field_ripe": 0.76,
+    "field_growing": 0.76,
+    "field_empty": 0.83,
+    "field_selected_empty": 0.62,
+    "field_selected_ripe": 0.7
+  },
+  "wheat_seed_reserve": 30
 }

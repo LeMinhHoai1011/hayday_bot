@@ -43,6 +43,7 @@ class HayDayGUI:
         self._photo = None
         self._sc: np.ndarray | None = None
 
+        self._showing_scan = False
         self._build_ui()
         self._connect()
         self._refresh_loop()
@@ -130,8 +131,12 @@ class HayDayGUI:
     def _connect(self):
         def worker():
             try:
-                self.bot = BlueStacksBot()
-                ok = self.bot.connect()
+                bot = BlueStacksBot()
+                ok = bot.connect()
+                if ok:
+                    self.bot = bot
+                else:
+                    self._log_msg(bot.last_reason)
                 self._set_status("Đã kết nối" if ok else "Không kết nối được BlueStacks")
                 self.root.after(0, lambda: self._live_badge.config(fg="#44ff44" if ok else "#ff4444"))
             except Exception as error:
@@ -147,6 +152,8 @@ class HayDayGUI:
         return int(gx * SCALE), int(gy * SCALE)
 
     def _on_press(self, e):
+        if self._running or self._sc is None:
+            return
         self._drag_start = (e.x, e.y)
         if self._rect_id:
             self._canvas.delete(self._rect_id)
@@ -182,6 +189,17 @@ class HayDayGUI:
             self._log_msg(f"Xoa vung {removed}")
 
     def _add_zone(self, zone):
+        if self._sc is None:
+            return
+        if not self.zones:
+            self._zone_frame = self._sc
+        else:
+            from verified_workflow import EvidenceError, FarmWorkflow
+            try:
+                FarmWorkflow(self.bot, self.zones, self._zone_frame).verify_frame(self._sc)
+            except EvidenceError as error:
+                self._log_msg(str(error))
+                return
         self.zones.append(zone)
         self._redraw_zones()
         self._log_msg(f"Vung #{len(self.zones)}: game ({zone[0]},{zone[1]})→({zone[2]},{zone[3]})")
@@ -206,34 +224,39 @@ class HayDayGUI:
 
     # ─── Cap nhat anh ────────────────────────
     def _refresh_loop(self):
-        if not self._running:
+        if not self._running and self._drag_start is None and not self._showing_scan:
             self._update_screenshot()
         self.root.after(REFRESH_MS, self._refresh_loop)
 
     def _force_refresh(self):
-        self._update_screenshot()
+        self._showing_scan = False
+        if not self._running and self._drag_start is None and self.bot is not None:
+            self.bot.stop_event.clear()
+            self._update_screenshot()
 
     def _update_screenshot(self):
-        if self.bot is None:
+        if self.bot is None or self.bot.stop_event.is_set():
             return
         def _do():
             try:
                 sc = self.bot.screenshot()
-                self._sc = sc
-                self.root.after(0, lambda: self._show_frame(sc))
+                self.root.after(0, lambda: self._show_frame(sc) if not (self._running or self._drag_start or self._showing_scan) else None)
             except Exception as ex:
                 self._log_msg(f"Chup anh loi: {ex}")
         threading.Thread(target=_do, daemon=True).start()
 
-    def _show_frame(self, sc: np.ndarray):
-        rgb = cv2.cvtColor(sc, cv2.COLOR_BGR2RGB)
+    def _show_frame(self, sc: np.ndarray, overlay=None):
+        self._sc = sc
+        self._showing_scan = overlay is not None
+        rgb = cv2.cvtColor(sc if overlay is None else overlay, cv2.COLOR_BGR2RGB)
         h_sc, w_sc = rgb.shape[:2]
         new_w, new_h = int(w_sc * SCALE), int(h_sc * SCALE)
         small = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
         img = Image.fromarray(small)
         photo = ImageTk.PhotoImage(img)
         self._photo = photo  # giu reference
-        self._canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+        self._canvas.delete("frame")
+        self._canvas.create_image(0, 0, anchor=tk.NW, image=photo, tags="frame")
         self._redraw_zones()  # ve vung len tren
 
     # ─── Log ─────────────────────────────────
@@ -254,20 +277,22 @@ class HayDayGUI:
             return
         # Set synchronously on Tk's thread to close the double-click race.
         self._running = True
+        self._showing_scan = False
         self._stop_flag = False
         self.bot.stop_event.clear()
         zones = list(self.zones)
+        reference = self._zone_frame if zones else None
         self._set_status("Đang thực hiện " + mode)
         def worker():
-            from verified_workflow import FarmWorkflow
+            from verified_workflow import FarmWorkflow, Workflow
             from sell_upgrade import ShopSeller
             from auto_calibrate import Positions
             result_status = "Hoàn tất"
             try:
                 with self.bot.task():
                     if mode in ("harvest", "harvest_sell"):
-                        farm = FarmWorkflow(self.bot)
-                        count = farm.run(zones=zones or None)
+                        farm = FarmWorkflow(self.bot, zones or None, reference)
+                        count = farm.run()
                         self._log_msg(f"Đã xác nhận thu {count} ô; {farm.reason}")
                         if farm.reason != "complete" or count == 0:
                             result_status = "Dừng: " + farm.reason
@@ -280,6 +305,7 @@ class HayDayGUI:
                         if seller.reason != "complete":
                             result_status = "Dừng: " + seller.reason
             except Exception as error:
+                Workflow(self.bot).fail(error)
                 self._log_msg(str(error))
                 result_status = "Lỗi: " + str(error)
             finally:
@@ -302,21 +328,25 @@ class HayDayGUI:
     def _rescan(self):
         if self._running or self.bot is None:
             return
+        zones = list(self.zones)
+        reference = self._zone_frame if zones else None
+        self.bot.stop_event.clear()
+        self._running = True
+
         def worker():
+            from verified_workflow import FarmWorkflow
+            farm = FarmWorkflow(self.bot, zones or None, reference)
             try:
-                from verified_workflow import Vision
-                image = self.bot.screenshot()
-                fields = Vision(self.bot).matches("field_ripe", image)
-                zones = [(x-25,y-25,x+25,y+25) for x,y,_ in fields]
-                def update():
-                    if self._running:
-                        return
-                    self.zones = zones
-                    self._show_frame(image)
-                self.root.after(0, update)
+                with self.bot.task():
+                    image = farm.stable()
+                    overlay, fields = farm.preview(image)
+                self.root.after(0, lambda: self._show_frame(image, overlay))
                 self._log_msg(f"Nhận diện {len(fields)} ô chín trên ảnh mới")
             except Exception as error:
+                farm.fail(error)
                 self._log_msg(str(error))
+            finally:
+                self.root.after(0, lambda: setattr(self, "_running", False))
         threading.Thread(target=worker, daemon=True).start()
 
     def _merge_zones(self, zones, gap=50):
@@ -355,6 +385,8 @@ class HayDayGUI:
         self._log_msg("Dang dung...")
         if self.bot is not None:
             self.bot.stop_event.set()
+            from verified_workflow import Workflow
+            Workflow(self.bot).log("stop_requested", reason="gui_stop")
         self._set_status("Đang dừng" if self._running else "Đã dừng")
 
 
