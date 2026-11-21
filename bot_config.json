@@ -1,0 +1,12 @@
+﻿{
+  "adb": "C:\\Users\\LENOVO\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe",
+  "port": 5555,
+  "device": null,
+  "debug_dir": "debug",
+  "timeout": 15,
+  "templates_dir": "templates",
+  "match_threshold": 0.88,
+  "stable_threshold": 1.5,
+  "camera_threshold": 3.0,
+  "rois": {}
+}
