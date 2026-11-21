@@ -117,6 +117,17 @@ class Regression(unittest.TestCase):
         self.assertEqual(s.run(2),0)
         self.assertNotIn((30,30),b.taps)
         self.assertNotIn((40,40),b.taps)
+    def test_stability_ignores_local_animation(self):
+        bot = Bot()
+        before = np.zeros((192, 312, 3), np.uint8)
+        after = before.copy()
+        after[40:120, 80:150] = 100
+        frames = iter((before, after))
+        bot.screenshot = lambda: next(frames)
+        flow = FarmWorkflow(bot)
+        with patch('verified_workflow.time.sleep'):
+            self.assertIs(flow.stable(), after)
+
     def test_camera_translation(self):
         rng=np.random.default_rng(42)
         before=rng.integers(0,256,(400,600,3),dtype=np.uint8)

@@ -201,8 +201,12 @@ class Workflow:
             self.check()
             time.sleep(.2)
             current = self.capture()
-            if previous.shape == current.shape and np.mean(cv2.absdiff(previous,current)) <= CONFIG['stable_threshold']:
-                return current
+            if previous.shape == current.shape:
+                # Ignore local effects while still waiting for movement across the farm view.
+                difference = cv2.absdiff(previous, current).astype(np.float32).mean(axis=2)
+                blocks = cv2.resize(difference, (12, 8), interpolation=cv2.INTER_AREA)
+                if float(np.median(blocks)) <= CONFIG['stable_threshold']:
+                    return current
             previous = current
         raise EvidenceError('screen_not_stable')
 
