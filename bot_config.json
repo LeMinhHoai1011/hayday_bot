@@ -105,7 +105,8 @@
     "field_growing": 0.76,
     "field_empty": 0.83,
     "field_selected_empty": 0.62,
-    "field_selected_ripe": 0.7
+    "field_selected_ripe": 0.7,
+    "harvest_tool": 0.8
   },
   "wheat_seed_reserve": 30
 }

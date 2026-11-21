@@ -79,6 +79,10 @@ class Vision:
         if name in ('field_ripe', 'field_growing'):
             comparison = cv2.GaussianBlur(crop, (9, 9), 0)
             pattern = cv2.GaussianBlur(template, (9, 9), 0)
+        if name == 'harvest_tool':
+            # Match the silver blade silhouette across grass, soil and shop-roof backgrounds.
+            comparison = self.silver_mask(comparison)
+            pattern = self.silver_mask(pattern)
         if name.startswith('field_selected_'):
             comparison = cv2.GaussianBlur(
                 cv2.inRange(comparison, (210, 210, 235), (255, 255, 255)), (9, 9), 0)
@@ -95,6 +99,11 @@ class Vision:
                 found.append((x0+x+tw//2, y0+y+th//2, float(score)))
             scores[max(0,y-th//2):y+th//2+1, max(0,x-tw//2):x+tw//2+1] = -1
         return found
+
+    @staticmethod
+    def silver_mask(image):
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        return cv2.GaussianBlur(cv2.inRange(hsv, (0, 0, 155), (179, 65, 255)), (7, 7), 0)
 
     @staticmethod
     def accept_match(name, patch, template):
